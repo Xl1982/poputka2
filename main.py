@@ -4,7 +4,8 @@ import re
 import time
 from enum import Enum
 from aiogram.dispatcher.filters import Command, ChatTypeFilter
-
+import aiogram
+print(aiogram.__version__)
 from aiogram.dispatcher.filters import Text
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ParseMode, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
