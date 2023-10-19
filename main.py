@@ -1,22 +1,28 @@
 import logging
-import random
 import re
-import time
 from enum import Enum
-from aiogram.dispatcher.filters import Command, ChatTypeFilter
 import aiogram
+from aiogram.dispatcher import FSMContext
+import aiosqlite
+import asyncio
+from datetime import datetime, timedelta
+
+
+from keyboards import seats_markup
+from mesText import mess1
 print(aiogram.__version__)
-from aiogram.dispatcher.filters import Text
-from aiogram import Bot, Dispatcher, types
 from aiogram.types import ParseMode, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils import executor
 import sqlite3
 from config import TOKEN_POPUTKA
+from aiogram import Bot, Dispatcher, types
+from aiogram.dispatcher.filters import BoundFilter
+from config import ADMINS
+
 API_TOKEN = TOKEN_POPUTKA
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
-
 
 class RideInputState(Enum):
     NAME = 0
@@ -37,8 +43,6 @@ keyboard_private = InlineKeyboardMarkup()
 btn_add_private = InlineKeyboardButton("Добавить поездку", callback_data="add")
 btn_show_private = InlineKeyboardButton("Показать поездки", callback_data="show")
 keyboard_private.add(btn_add_private, btn_show_private)
-
-
 
 keyboard_group = InlineKeyboardMarkup()
 btn_goto_bot = InlineKeyboardButton("Добавить поездку", url="https://t.me/poputka3_bot")  # Замените YourBotUsername на имя пользователя вашего бота
@@ -67,16 +71,12 @@ def init_db():
     except Exception as e:
         print(f"Error initializing database: {str(e)}")
 
-
 def add_ride(user_id, name, seats, from_place, to_place, date, time, price_per_person):  # Добавить price_per_person
     with sqlite3.connect('rides.db') as conn:
         conn.execute("INSERT INTO rides (user_id, name, seats, from_place, to_place, date, time, price_per_person) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                      (user_id, name, seats, from_place, to_place, date, time, price_per_person))
         conn.commit()
 
-from aiogram import Bot, Dispatcher, types
-from aiogram.dispatcher.filters import BoundFilter
-from config import ADMINS
 
 class IsGroup(BoundFilter): #
     async def check(self, message: types.Message):
@@ -84,7 +84,6 @@ class IsGroup(BoundFilter): #
             types.ChatType.GROUP,
             types.ChatType.SUPERGROUP,
         )
-
 
 class IsAdminFilter(BoundFilter): # фильтр определяет по списку админов из файла конфиг
     async def check(self, message: types.Message):
@@ -95,25 +94,23 @@ class IsPrivate(BoundFilter):
        return message.chat.type == types.ChatType.PRIVATE
 
 
-mess1= f"""
-🚗 Поиск попутчиков на авто из Торревьехи 🚗
-
-🚘 Водители:
-Готовы подвезти пассажиров?
-🤔 Нажмите на кнопку "Добавить поездку" ниже!
-
-🛣️ Планируемые поездки с 📅 датой, ⏰ временем и 💶 ценой будут публиковаться каждый день в этом чате.
-
-🔍 Пассажиры:
-Ищете поездку до Аликанте, аэропорта или других направлений?
-📍 Нажмите "Показать поездки" и выберите удобное для вас предложение! 🚕"""
 @dp.message_handler(commands=['start'])
 async def send_welcome(message: types.Message):
     if message.chat.type in [types.ChatType.GROUP, types.ChatType.SUPERGROUP]:
         await message.answer(mess1, reply_markup=keyboard_group)
-
     else:
         await message.answer("Привет! Я бот для поиска попутных поездок.", reply_markup=keyboard_private)
+
+
+@dp.callback_query_handler(lambda c: c.data == 'cancel', state="*")
+async def process_cancel(callback_query: types.CallbackQuery, state: FSMContext):
+    await bot.answer_callback_query(callback_query.id)
+    await state.finish()
+    await bot.send_message(
+        callback_query.from_user.id,
+        "Ввод отменен. Вы в главном меню.",
+        reply_markup=keyboard_private
+    )
 
 @dp.callback_query_handler(lambda c: c.data == 'add')
 async def process_callback_add(callback_query: types.CallbackQuery):
@@ -123,8 +120,20 @@ async def process_callback_add(callback_query: types.CallbackQuery):
     user_data[user_id] = {}
     await bot.send_message(user_id, "Введите ваш ник или телефон:")
 
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('seats:'))
+async def process_callback_seats(query: types.CallbackQuery):
+    _, selected_seats = query.data.split(':')  # Разделите данные обратного вызова по двоеточию.
+    selected_seats = int(selected_seats)
+    user_id = query.from_user.id
+    if user_id in user_states:
+        user_states[user_id] = RideInputState.FROM_PLACE
+        user_data[user_id]["seats"] = selected_seats
+        await bot.send_message(user_id, "Отлично! Теперь, пожалуйста, введите место отправления:")
+    await query.answer()
 
-#обращение к базе данных за выводом
+
+
+    #обращение к базе данных за выводом
 # Измененная функция для получения информации о поездках
 def get_rides_info():
     with sqlite3.connect('rides.db') as conn:
@@ -173,7 +182,8 @@ async def process_input(message: types.Message):
     if state == RideInputState.NAME:
         user_data[user_id]["name"] = message.text
         user_states[user_id] = RideInputState.SEATS
-        await message.answer("Сколько мест у вас доступно?")
+        await message.answer("Сколько мест у вас доступно?", reply_markup=seats_markup)
+
 
     elif state == RideInputState.SEATS:
         try:
@@ -182,7 +192,7 @@ async def process_input(message: types.Message):
             user_states[user_id] = RideInputState.FROM_PLACE
             await message.answer("Введите место отправления:")
         except ValueError:
-            await message.answer("Пожалуйста, введите корректное число мест.")
+            await message.answer("Пожалуйста, введите корректное число мест.", reply_markup=seats_markup)
 
 
     elif state == RideInputState.FROM_PLACE:
@@ -194,12 +204,18 @@ async def process_input(message: types.Message):
     elif state == RideInputState.TO_PLACE:
         user_data[user_id]["to_place"] = message.text
         user_states[user_id] = RideInputState.DATE
-        await message.answer("Введите дату поездки (например, 12.04.2023):")
+        await message.answer("Введите дату поездки (в формате дд.мм.гггг, 12.04.2023):")
 
     elif state == RideInputState.DATE:
-        user_data[user_id]["date"] = message.text
-        user_states[user_id] = RideInputState.TIME
-        await message.answer("Введите время отправления (например, 15:30):")
+        match = re.match(r'\b(0?[1-9]|[12][0-9]|3[01])\.(0?[1-9]|1[012])\.([12][0-9]{3})\b', message.text)
+
+        #проверяем соответствует ли сообщение формату "ДД.ММ.ГГ"
+        if match:
+            user_data[user_id]["date"] = message.text
+            user_states[user_id] = RideInputState.TIME
+            await message.answer("Введите время отправления (например, 15:30):")
+        else:
+            await message.answer("Пожалуйста, введите дату в правильном формате  ")
 
     elif state == RideInputState.TIME:
         user_data[user_id]["time"] = message.text
@@ -224,7 +240,6 @@ async def process_input(message: types.Message):
         except ValueError:
             await message.answer("Пожалуйста, введите корректную цену.")
 
-
 from config import CHAT_ID
 async def send_ride_to_chat(ride_info):
     chat_id = CHAT_ID  # замените на ваш chat_id
@@ -240,9 +255,48 @@ async def send_ride_to_chat(ride_info):
     )
     await bot.send_message(chat_id, message_text)
 
+async def delete_old_rides():
+    while True:  # Создаем бесконечный цикл, который будет регулярно запускать эту задачу
+        try:
+            today = datetime.now().date()  # Получаем дату вчерашнего дня
+            date_str = today.strftime('%d.%m.%Y')  # Преобразуем дату в строку, соответствующую формату в вашей базе данных
+
+            async with aiosqlite.connect('rides.db') as db:
+                await db.execute("DELETE FROM rides WHERE date < ?", (date_str,))
+                await db.commit()
+
+            await asyncio.sleep(12)  # Ожидаем 24 часа (время указано в секундах) перед следующим удалением
+
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            await asyncio.sleep(10)  # Если произошла ошибка, попробуем снова через час
+
+
+async def send_rides_info_at_specific_time(chat_id):
+    while True:
+        current_time = datetime.now().time()
+        if current_time.hour == 21 or current_time.hour == 30:
+            rides_info = get_rides_info()
+
+            if not rides_info:
+                await bot.send_message(chat_id, "Актуальных поездок нет", reply_markup=keyboard_group)
+            else:
+                await bot.send_message(chat_id, mess1, reply_markup=keyboard_group)
+                for ride in rides_info:
+                    await send_ride_to_chat(ride)
+
+            await asyncio.sleep(60 * 60 * 24) # ожидание сообщения 24 часа
+            #await asyncio.sleep(10)
+        else:
+            await asyncio.sleep(60 * 30) # если еще не время для отправки то ждем 30 минут
+            #await asyncio.sleep(10)
+
+
+
 
 if __name__ == '__main__':
     init_db()
-
+    delete_old_rides_task = asyncio.ensure_future(delete_old_rides())
+    send_info_task = asyncio.ensure_future(send_rides_info_at_specific_time(CHAT_ID))
     executor.start_polling(dp, skip_updates=True)
 
